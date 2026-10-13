@@ -83,6 +83,9 @@ async def batch_execute(
                          "Stop processing after the first failure"] = None,
     max_parallelism: Annotated[int | None,
                                "Hint for the maximum number of parallel workers"] = None,
+    timeout_seconds: Annotated[
+        int, "Maximum seconds Unity may spend on the batch (1-3600). Default: 300."
+    ] = 300,
 ) -> dict[str, Any]:
     """Proxy the batch_execute tool to the Unity Editor transporter."""
     unity_instance = await get_unity_instance_from_context(ctx)
@@ -130,6 +133,7 @@ async def batch_execute(
 
     payload: dict[str, Any] = {
         "commands": normalized_commands,
+        "timeout_seconds": max(1, min(3600, int(timeout_seconds))),
     }
 
     if parallel is not None:

@@ -64,6 +64,9 @@ async def execute_code(
         "'auto' uses Roslyn if Microsoft.CodeAnalysis is installed, else falls back to CodeDom. "
         "'roslyn' forces Roslyn (C# 12+). 'codedom' forces legacy CSharpCodeProvider (C# 6). Default: auto.",
     ] = "auto",
+    timeout_seconds: Annotated[
+        int, "Maximum seconds Unity may spend on this command (1-3600). Default: 300."
+    ] = 300,
 ) -> dict[str, Any]:
     unity_instance = await get_unity_instance_from_context(ctx)
 
@@ -75,10 +78,12 @@ async def execute_code(
         params_dict["code"] = code
         params_dict["safety_checks"] = safety_checks
         params_dict["compiler"] = compiler
+        params_dict["timeout_seconds"] = max(1, min(3600, int(timeout_seconds)))
     elif action == "replay":
         if index is None:
             return {"success": False, "message": "Parameter 'index' is required for 'replay' action."}
         params_dict["index"] = index
+        params_dict["timeout_seconds"] = max(1, min(3600, int(timeout_seconds)))
     elif action == "get_history":
         params_dict["limit"] = max(1, min(limit, 50))
 
@@ -96,6 +101,10 @@ async def execute_code(
 
     return {
         "success": response.get("success", False),
-        "message": response.get("message", response.get("error", "")),
+        "message": response.get("message") or response.get("error") or (
+            "Unity command failed without a diagnostic"
+            if response.get("success") is False else None
+        ),
+        "error": response.get("error"),
         "data": response.get("data"),
     }

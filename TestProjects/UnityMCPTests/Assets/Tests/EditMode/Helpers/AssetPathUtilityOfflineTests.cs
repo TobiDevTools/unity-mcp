@@ -22,6 +22,43 @@ namespace MCPForUnityTests.Editor.Helpers
         }
 
         [Test]
+        public void ForkDefaultServerPackageSource_PointsAtSlimPinnedServerCommit()
+        {
+            string originalOverride = EditorPrefs.GetString(EditorPrefKeys.GitUrlOverride, "");
+            try
+            {
+                EditorPrefs.DeleteKey(EditorPrefKeys.GitUrlOverride);
+                string source = AssetPathUtility.GetMcpServerPackageSource();
+
+                Assert.AreEqual(
+                    "git+https://github.com/TobiDevTools/unity-mcp.git@90a61162513ab3143b6dce3c637e8799e19dab27",
+                    source);
+                Assert.IsFalse(source.Contains("subdirectory=Server"),
+                    "The slim tree must install from its root.");
+            }
+            finally
+            {
+                EditorPrefs.SetString(EditorPrefKeys.GitUrlOverride, originalOverride);
+            }
+        }
+
+        [Test]
+        public void ExplicitServerSourceOverride_TakesPrecedenceOverForkDefault()
+        {
+            string originalOverride = EditorPrefs.GetString(EditorPrefKeys.GitUrlOverride, "");
+            try
+            {
+                EditorPrefs.SetString(EditorPrefKeys.GitUrlOverride, "mcpforunityserver==10.3.0");
+                Assert.AreEqual("mcpforunityserver==10.3.0",
+                    AssetPathUtility.GetMcpServerPackageSource());
+            }
+            finally
+            {
+                EditorPrefs.SetString(EditorPrefKeys.GitUrlOverride, originalOverride);
+            }
+        }
+
+        [Test]
         public void ShouldUseUvxOffline_WhenForceRefreshEnabled_ReturnsFalse()
         {
             EditorPrefs.SetBool(EditorPrefKeys.DevModeForceServerRefresh, true);

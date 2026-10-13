@@ -13,6 +13,97 @@ namespace MCPForUnityTests.Editor.Tools
 {
     public class ExecuteCodeTests
     {
+
+        // ──────────────────── Durable execution / reconnect ────────────────────
+
+        [Test]
+        public void DurableExecution_ExactlyOnce_AndGetJobRestoresOriginalResult()
+        {
+            var id = Guid.NewGuid().ToString("N");
+            var variable = "MCP_DURABLE_TEST_" + id;
+            var code = "var s = System.Environment.GetEnvironmentVariable(\""+variable+"\");"
+                + " var n = string.IsNullOrEmpty(s) ? 0 : int.Parse(s);"
+                + " System.Environment.SetEnvironmentVariable(\""+variable+"\", (n+1).ToString());"
+                + " return n+1;";
+            try
+            {
+                var parameters = new JObject {
+                    ["action"] = "execute", ["code"] = code,
+                    ["compiler"] = "roslyn", ["job_id"] = id
+                };
+                var first = ToJObject(ExecuteCode.HandleCommand(parameters));
+                Assert.IsTrue(first.Value<bool>("success"), first.ToString());
+                Assert.AreEqual(1, first["data"]["result"].Value<int>());
+
+                var duplicate = ToJObject(ExecuteCode.HandleCommand(parameters));
+                Assert.IsTrue(duplicate.Value<bool>("success"), duplicate.ToString());
+                Assert.AreEqual(1, duplicate["data"]["result"].Value<int>());
+                Assert.AreEqual("1", Environment.GetEnvironmentVariable(variable));
+
+                var status = ToJObject(ExecuteCode.HandleCommand(new JObject {
+                    ["action"] = "get_job", ["job_id"] = id
+                }));
+                Assert.IsTrue(status.Value<bool>("success"), status.ToString());
+                Assert.AreEqual("completed", status["data"]["state"].Value<string>());
+                Assert.AreEqual(1, status["data"]["result"]["data"]["result"].Value<int>());
+            }
+            finally
+            {
+                Environment.SetEnvironmentVariable(variable, null);
+                MCPForUnity.Editor.Helpers.McpJobStateStore.ClearState("execute-code-" + id);
+            }
+        }
+
+        [Test]
+        public void DurableExecution_RejectsJobIdReuseWithDifferentCode()
+        {
+            var id = Guid.NewGuid().ToString("N");
+            try
+            {
+                var first = ToJObject(ExecuteCode.HandleCommand(new JObject {
+                    ["action"] = "execute", ["code"] = "return 10;", ["job_id"] = id
+                }));
+                Assert.IsTrue(first.Value<bool>("success"), first.ToString());
+                var mismatch = ToJObject(ExecuteCode.HandleCommand(new JObject {
+                    ["action"] = "execute", ["code"] = "return 11;", ["job_id"] = id
+                }));
+                Assert.IsFalse(mismatch.Value<bool>("success"), mismatch.ToString());
+                StringAssert.Contains("already used", mismatch.Value<string>("error"));
+            }
+            finally
+            {
+                MCPForUnity.Editor.Helpers.McpJobStateStore.ClearState("execute-code-" + id);
+            }
+        }
+
+        [Test]
+        public void DurableExecution_GetJobUnknownAndPriorDomainDoNotRerun()
+        {
+            var neverStarted = Guid.NewGuid().ToString("N");
+            var missing = ToJObject(ExecuteCode.HandleCommand(new JObject {
+                ["action"] = "get_job", ["job_id"] = neverStarted
+            }));
+            Assert.AreEqual("not_found", missing["data"]["state"].Value<string>());
+
+            var priorDomain = Guid.NewGuid().ToString("N");
+            try
+            {
+                MCPForUnity.Editor.Helpers.McpJobStateStore.SaveState(
+                    "execute-code-" + priorDomain, new {
+                        id = priorDomain, state = "running", session = "previous-editor-domain",
+                        fingerprint = "test", resultJson = (string)null
+                    });
+                var found = ToJObject(ExecuteCode.HandleCommand(new JObject {
+                    ["action"] = "get_job", ["job_id"] = priorDomain
+                }));
+                Assert.AreEqual("outcome_unknown", found["data"]["state"].Value<string>());
+            }
+            finally
+            {
+                MCPForUnity.Editor.Helpers.McpJobStateStore.ClearState("execute-code-" + priorDomain);
+            }
+        }
+
         [SetUp]
         public void SetUp()
         {

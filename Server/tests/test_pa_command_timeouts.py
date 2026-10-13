@@ -91,3 +91,42 @@ async def test_batch_execute_sends_unity_timeout(monkeypatch, requested, expecte
     )
     assert send.await_args.args[1:3] == ("unity-test", "batch_execute")
     assert send.await_args.args[3]["timeout_seconds"] == expected
+
+
+@pytest.mark.asyncio
+async def test_execute_code_passes_durable_job_id_to_unity(monkeypatch):
+    send = AsyncMock(return_value={"success": True, "data": {"result": 1}})
+    monkeypatch.setattr(execute_module, "get_unity_instance_from_context",
+                        AsyncMock(return_value="unity-test"))
+    monkeypatch.setattr(execute_module, "send_with_unity_instance", send)
+    job_id = "a" * 32
+    await execute_module.execute_code(
+        object(), action="execute", code="return 1;", job_id=job_id
+    )
+    assert send.await_args.args[3]["job_id"] == job_id
+
+
+@pytest.mark.asyncio
+async def test_get_job_uses_same_id_and_never_sends_code(monkeypatch):
+    send = AsyncMock(return_value={
+        "success": True,
+        "data": {"state": "completed", "result": {"success": True, "data": 42}},
+    })
+    monkeypatch.setattr(execute_module, "get_unity_instance_from_context",
+                        AsyncMock(return_value="unity-test"))
+    monkeypatch.setattr(execute_module, "send_with_unity_instance", send)
+    job_id = "b" * 32
+    response = await execute_module.execute_code(
+        object(), action="get_job", job_id=job_id, timeout_seconds=420
+    )
+    assert response["data"]["state"] == "completed"
+    args = send.await_args.args[3]
+    assert args == {"action": "get_job", "job_id": job_id, "timeout_seconds": 420}
+
+
+@pytest.mark.asyncio
+async def test_get_job_requires_id(monkeypatch):
+    monkeypatch.setattr(execute_module, "get_unity_instance_from_context",
+                        AsyncMock(return_value="unity-test"))
+    result = await execute_module.execute_code(object(), action="get_job")
+    assert result["success"] is False

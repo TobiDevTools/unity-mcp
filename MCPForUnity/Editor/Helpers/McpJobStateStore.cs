@@ -28,7 +28,22 @@ namespace MCPForUnity.Editor.Helpers
             var path = GetStatePath(toolName);
             Directory.CreateDirectory(Path.GetDirectoryName(path));
             var json = JsonConvert.SerializeObject(state ?? Activator.CreateInstance<T>());
-            File.WriteAllText(path, json);
+            // Write via a uniquely named temporary file, then atomically replace.
+            // A domain reload or process crash must not leave a truncated job result.
+            var temporaryPath = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
+            try
+            {
+                File.WriteAllText(temporaryPath, json);
+                if (File.Exists(path))
+                    File.Replace(temporaryPath, path, null);
+                else
+                    File.Move(temporaryPath, path);
+            }
+            finally
+            {
+                if (File.Exists(temporaryPath))
+                    File.Delete(temporaryPath);
+            }
         }
 
         public static T LoadState<T>(string toolName)

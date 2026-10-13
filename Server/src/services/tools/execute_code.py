@@ -37,7 +37,7 @@ from transport.legacy.unity_connection import async_send_command_with_retry
 async def execute_code(
     ctx: Context,
     action: Annotated[
-        Literal["execute", "get_history", "replay", "clear_history"],
+        Literal["execute", "get_history", "replay", "clear_history", "get_job"],
         "Action to perform.",
     ],
     code: Annotated[
@@ -67,6 +67,11 @@ async def execute_code(
     timeout_seconds: Annotated[
         int, "Maximum seconds Unity may spend on this command (1-3600). Default: 300."
     ] = 300,
+    job_id: Annotated[
+        str | None, "Optional 32-digit lowercase hex durable execution ID. "
+        "Use action=get_job with the same ID to retrieve the persisted result "
+        "without re-executing code."
+    ] = None,
 ) -> dict[str, Any]:
     unity_instance = await get_unity_instance_from_context(ctx)
 
@@ -78,14 +83,23 @@ async def execute_code(
         params_dict["code"] = code
         params_dict["safety_checks"] = safety_checks
         params_dict["compiler"] = compiler
+        if job_id is not None:
+            params_dict["job_id"] = job_id
         params_dict["timeout_seconds"] = max(1, min(3600, int(timeout_seconds)))
     elif action == "replay":
         if index is None:
             return {"success": False, "message": "Parameter 'index' is required for 'replay' action."}
         params_dict["index"] = index
+        if job_id is not None:
+            params_dict["job_id"] = job_id
         params_dict["timeout_seconds"] = max(1, min(3600, int(timeout_seconds)))
     elif action == "get_history":
         params_dict["limit"] = max(1, min(limit, 50))
+    elif action == "get_job":
+        if not job_id:
+            return {"success": False, "message": "job_id is required for get_job."}
+        params_dict["job_id"] = job_id
+        params_dict["timeout_seconds"] = max(1, min(3600, int(timeout_seconds)))
 
     params_dict = {k: v for k, v in params_dict.items() if v is not None}
 

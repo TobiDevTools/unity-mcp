@@ -226,22 +226,11 @@ namespace MCPForUnity.Editor.Helpers
                 return resolved;
             }
 
-            // Default to PyPI package (avoids Windows long path issues with git clone)
-            string version = GetPackageVersion();
-            if (version == "unknown")
-            {
-                // Fall back to latest PyPI version so configs remain valid in test scenarios
-                return "mcpforunityserver";
-            }
-
-            // Package.json uses semver prerelease tags (e.g., 9.4.5-beta.1) that are not valid
-            // PEP 440 pins for uvx. Use the beta prerelease range instead of a pinned prerelease.
-            if (IsSemVerPreRelease(version))
-            {
-                return "mcpforunityserver>=0.0.0a0";
-            }
-
-            return $"mcpforunityserver=={version}";
+            // Littlehaven fork: the matching Python server is published as a slim,
+            // server-only tree, to avoid Windows MAX_PATH failures when uvx checks out
+            // the full Unity repository. Pin the immutable server-only commit.
+            // An explicit EditorPrefs server-source override above still wins.
+            return "git+https://github.com/TobiDevTools/unity-mcp.git@90a61162513ab3143b6dce3c637e8799e19dab27";
         }
 
         /// <summary>

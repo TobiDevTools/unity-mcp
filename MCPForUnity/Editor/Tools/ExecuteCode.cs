@@ -4,10 +4,12 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Reflection;
+using System.Security.Cryptography;
 using System.Text;
 using MCPForUnity.Editor.Helpers;
 using MCPForUnity.Runtime.Helpers;
 using Microsoft.CSharp;
+using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using UnityEngine;
 
@@ -27,6 +29,21 @@ namespace MCPForUnity.Editor.Tools
         private const string ActionGetHistory = "get_history";
         private const string ActionClearHistory = "clear_history";
         private const string ActionReplay = "replay";
+        private const string ActionGetJob = "get_job";
+        private static readonly string JobSessionId = Guid.NewGuid().ToString("N");
+
+        // A durable execution is opt-in via job_id. A running job from an earlier
+        // domain is NEVER run again: its outcome may already have side effects.
+        [Serializable]
+        private sealed class DurableExecution
+        {
+            public DurableExecution() { }
+            public string id;
+            public string fingerprint;
+            public string session;
+            public string state;
+            public string resultJson;
+        }
 
         private static readonly List<HistoryEntry> _history = new List<HistoryEntry>();
         private static string[] _cachedAssemblyPaths;
@@ -99,10 +116,80 @@ namespace MCPForUnity.Editor.Tools
                     return HandleClearHistory();
                 case ActionReplay:
                     return HandleReplay(@params);
+                case ActionGetJob:
+                    return HandleGetJob(@params);
                 default:
                     return new ErrorResponse(
-                        $"Unknown action: '{action}'. Valid actions: {ActionExecute}, {ActionGetHistory}, {ActionClearHistory}, {ActionReplay}");
+                        $"Unknown action: '{action}'. Valid actions: {ActionExecute}, {ActionGetHistory}, {ActionClearHistory}, {ActionReplay}, {ActionGetJob}");
             }
+        }
+
+        private static bool ValidJobId(string id)
+        {
+            // 32 lowercase hexadecimal characters (uuid4 hex), with no path separators.
+            return id != null && id.Length == 32
+                && id.All(c => (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'));
+        }
+
+        private static string JobStoreName(string id) => "execute-code-" + id;
+
+        private static string JobFingerprint(string code, bool safetyChecks, string compiler)
+        {
+            string input = compiler + "\n" + (safetyChecks ? "1" : "0") + "\n" + code;
+            using (var sha = SHA256.Create())
+                return BitConverter.ToString(sha.ComputeHash(Encoding.UTF8.GetBytes(input)))
+                    .Replace("-", "").ToLowerInvariant();
+        }
+
+        private static DurableExecution ReadJob(string id)
+        {
+            // A corrupt state file must NEVER be mistaken for an unexecuted job.
+            // McpJobStateStore returns null for corrupt files; check for their presence.
+            return McpJobStateStore.LoadState<DurableExecution>(JobStoreName(id));
+        }
+
+        private static bool JobFileExists(string id)
+        {
+            string path = Path.Combine(Application.dataPath, "..", "Library",
+                "McpState_" + JobStoreName(id) + ".json");
+            return File.Exists(path);
+        }
+
+        private static object HandleGetJob(JObject parameters)
+        {
+            string id = parameters["job_id"]?.ToString();
+            if (!ValidJobId(id))
+                return new ErrorResponse("get_job requires a 32-character lowercase hexadecimal job_id.");
+
+            var record = ReadJob(id);
+            if (record == null)
+                return new SuccessResponse("Job not found or state is unreadable.", new {
+                    job_id = id, state = JobFileExists(id) ? "outcome_unknown" : "not_found"
+                });
+
+            if (record.state == "completed" && !string.IsNullOrEmpty(record.resultJson))
+            {
+                try
+                {
+                    return new SuccessResponse("Completed durable execution.", new {
+                        job_id = id, state = "completed", result = JToken.Parse(record.resultJson)
+                    });
+                }
+                catch (JsonException)
+                {
+                    return new SuccessResponse("Persisted result is invalid.", new {
+                        job_id = id, state = "outcome_unknown"
+                    });
+                }
+            }
+
+            // Main-thread execution blocks new requests until completion. If a domain
+            // reload interrupted the command, the old static session can no longer
+            // confirm whether effects were applied. Never auto-execute again.
+            return new SuccessResponse("Execution not yet confirmed complete.", new {
+                job_id = id,
+                state = "outcome_unknown"
+            });
         }
 
         private static object HandleExecute(JObject @params)
@@ -116,6 +203,10 @@ namespace MCPForUnity.Editor.Tools
 
             bool safetyChecks = @params["safety_checks"]?.Value<bool>() ?? true;
             string compiler = @params["compiler"]?.ToString()?.ToLowerInvariant() ?? "auto";
+            string jobId = @params["job_id"]?.ToString();
+
+            if (jobId != null && !ValidJobId(jobId))
+                return new ErrorResponse("job_id must be 32 lowercase hexadecimal characters.");
 
             if (safetyChecks)
             {
@@ -124,22 +215,72 @@ namespace MCPForUnity.Editor.Tools
                     return new ErrorResponse($"Blocked pattern detected: {violation}");
             }
 
+            DurableExecution record = null;
+            if (jobId != null)
+            {
+                string fingerprint = JobFingerprint(code, safetyChecks, compiler);
+                record = ReadJob(jobId);
+                if (record != null || JobFileExists(jobId))
+                {
+                    if (record == null)
+                        return new ErrorResponse("Durable job state is unreadable; outcome_unknown, refusing to execute.");
+                    if (record.fingerprint != fingerprint)
+                        return new ErrorResponse("job_id was already used for a different execution.");
+                    if (record.state == "completed" && !string.IsNullOrEmpty(record.resultJson))
+                    {
+                        try { return JToken.Parse(record.resultJson); }
+                        catch (JsonException) {
+                            return new ErrorResponse("Stored result is invalid; outcome_unknown, refusing to execute.");
+                        }
+                    }
+                    return new ErrorResponse("Job already started; use get_job to retrieve its status. "
+                        + (record.session == JobSessionId ? "running" : "outcome_unknown"));
+                }
+
+                record = new DurableExecution {
+                    id = jobId, fingerprint = fingerprint,
+                    session = JobSessionId, state = "running"
+                };
+                try { McpJobStateStore.SaveState(JobStoreName(jobId), record); }
+                catch (Exception e)
+                {
+                    return new ErrorResponse("Cannot persist durable job before execution: " + e.Message);
+                }
+            }
+
+            object result;
             try
             {
                 var startTime = DateTime.UtcNow;
-                var result = CompileAndExecute(code, compiler);
+                result = CompileAndExecute(code, compiler);
                 var elapsed = (DateTime.UtcNow - startTime).TotalMilliseconds;
-
                 AddToHistory(code, result, elapsed, safetyChecks, compiler);
-                return result;
             }
             catch (Exception e)
             {
                 McpLog.Error($"[ExecuteCode] Execution failed: {e}");
-                var errorResult = new ErrorResponse($"Execution failed: {e.Message}");
-                AddToHistory(code, errorResult, 0, safetyChecks, compiler);
-                return errorResult;
+                result = new ErrorResponse($"Execution failed: {e.Message}");
+                AddToHistory(code, result, 0, safetyChecks, compiler);
             }
+
+            if (record != null)
+            {
+                try
+                {
+                    // Persist the exact response before returning it to the WebSocket.
+                    record.resultJson = JsonConvert.SerializeObject(result);
+                    record.state = "completed";
+                    McpJobStateStore.SaveState(JobStoreName(jobId), record);
+                }
+                catch (Exception e)
+                {
+                    // The command MAY already have mutated Unity. Never pretend it is
+                    // safe to resubmit merely because result persistence failed.
+                    return new ErrorResponse("Execution finished but result could not be persisted; "
+                        + "outcome_unknown: " + e.Message);
+                }
+            }
+            return result;
         }
 
         private static object HandleGetHistory(JObject @params)
@@ -193,6 +334,7 @@ namespace MCPForUnity.Editor.Tools
                 code = entry.code,
                 safety_checks = entry.safetyChecksEnabled,
                 compiler = entry.compiler ?? "auto",
+                job_id = @params["job_id"]?.ToString(),
             });
             return HandleExecute(replayParams);
         }

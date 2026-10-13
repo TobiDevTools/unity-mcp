@@ -187,8 +187,7 @@ namespace MCPForUnity.Editor.Tools
             // confirm whether effects were applied. Never auto-execute again.
             return new SuccessResponse("Execution not yet confirmed complete.", new {
                 job_id = id,
-                state = record.state == "running" && record.session == JobSessionId
-                    ? "running" : "outcome_unknown"
+                state = "outcome_unknown"
             });
         }
 

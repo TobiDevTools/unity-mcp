@@ -226,10 +226,11 @@ namespace MCPForUnity.Editor.Helpers
                 return resolved;
             }
 
-            // Littlehaven fork: Unity Package Manager only installs the C# package.
-            // Launch the matching Python server directly from the pinned fork commit.
+            // Littlehaven fork: the matching Python server is published as a slim,
+            // server-only tree, to avoid Windows MAX_PATH failures when uvx checks out
+            // the full Unity repository. Pin the immutable server-only commit.
             // An explicit EditorPrefs server-source override above still wins.
-            return "git+https://github.com/TobiDevTools/unity-mcp.git@8ed433227dc999ac3871914e50e15eb4915a7adf#subdirectory=Server";
+            return "git+https://github.com/TobiDevTools/unity-mcp.git@90a61162513ab3143b6dce3c637e8799e19dab27";
         }
 
         /// <summary>

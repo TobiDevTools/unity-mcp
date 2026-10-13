@@ -37,6 +37,7 @@ namespace MCPForUnity.Editor.Tools
         [Serializable]
         private sealed class DurableExecution
         {
+            public DurableExecution() { }
             public string id;
             public string fingerprint;
             public string session;

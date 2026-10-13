@@ -29,7 +29,7 @@ namespace MCPForUnityTests.Editor.Tools
             {
                 var parameters = new JObject {
                     ["action"] = "execute", ["code"] = code,
-                    ["compiler"] = "roslyn", ["job_id"] = id
+                    ["compiler"] = "auto", ["job_id"] = id
                 };
                 var first = ToJObject(ExecuteCode.HandleCommand(parameters));
                 Assert.IsTrue(first.Value<bool>("success"), first.ToString());
